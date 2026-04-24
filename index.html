@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Z-Run Multiplayer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        /* --- Base & Reset --- */
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Segoe UI', Roboto, sans-serif; background-color: #0a0a0a; color: #eee; overflow: hidden; touch-action: none; }
+        #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; filter: grayscale(0.5) contrast(1.2); }
+        
+        /* --- Écrans --- */
+        .screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle, rgba(20,20,20,0.95) 0%, rgba(0,0,0,1) 100%); z-index: 1000; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box; }
+        .hidden { display: none !important; }
+        h1 { color: #ff3e3e; font-size: 3.5rem; margin: 0; text-transform: uppercase; text-shadow: 0 0 15px rgba(255, 62, 62, 0.6); }
+        h2 { color: #00ff88; margin-top: 10px; font-weight: 300; }
+        p { font-size: 1rem; color: #aaa; margin: 8px 0; }
+        input[type="text"] { padding: 15px; font-size: 1.2rem; border-radius: 10px; border: 2px solid #ff3e3e; background: #222; color: white; text-align: center; margin-bottom: 20px; width: 80%; max-width: 300px; }
+        
+        /* --- Boutons --- */
+        button { background: #ff3e3e; color: white; border: none; padding: 15px 30px; font-size: 1.1rem; font-weight: bold; text-transform: uppercase; cursor: pointer; border-radius: 50px; margin: 10px; width: 80%; max-width: 300px; transition: 0.2s; }
+        button:active { transform: scale(0.95); }
+        button:disabled { background: #444; color: #777; }
+        .btn-green { background: #2ecc71; }
+        .btn-gray { background: #7f8c8d; }
+
+        /* --- UI Lobbies --- */
+        .lobby-card { background: #222; border: 2px solid #444; border-radius: 10px; padding: 15px; margin: 10px; width: 90%; max-width: 350px; display: flex; justify-content: space-between; align-items: center; }
+        .player-list { width: 100%; max-width: 350px; text-align: left; background: #111; padding: 15px; border-radius: 10px; margin-bottom: 20px; }
+        .player-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #333; }
+        
+        /* --- HUD --- */
+        #hud { position: absolute; top: 0; left: 0; right: 0; z-index: 500; padding: 15px; display: flex; justify-content: space-between; pointer-events: none; }
+        .hud-box { background: rgba(0, 0, 0, 0.8); padding: 12px; border-radius: 15px; pointer-events: auto; backdrop-filter: blur(10px); }
+        #score-display { font-size: 1.8rem; font-weight: bold; }
+        
+        /* --- Debug --- */
+        #debug-panel { position: absolute; top: 80px; right: 15px; z-index: 600; display: flex; flex-direction: column; gap: 5px; }
+        .debug-btn { padding: 8px 15px; font-size: 0.8rem; background: rgba(50,50,50,0.8); border: 1px solid #777; border-radius: 5px; color: white; cursor: pointer; pointer-events: auto; }
+        
+        /* --- Map Markers --- */
+        .custom-div-icon { background: none; border: none; }
+        .player-marker { width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 10px rgba(255,255,255,0.5); }
+        .zombie-marker { background-color: #e74c3c; width: 16px; height: 16px; border-radius: 50%; border: 2px solid white; animation: pulse-red 1.5s infinite; }
+        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(231, 76, 60, 0); } 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); } }
+
+        /* End Game */
+        .scoreboard { text-align: left; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; width: 90%; max-width: 400px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+
+    <div id="login-screen" class="screen">
+        <h1>Z-Run</h1>
+        <h2>Multijoueur</h2>
+        <p>Entrez votre pseudo pour commencer</p>
+        <input type="text" id="pseudo-input" placeholder="Pseudo..." maxlength="12">
+        <button id="btn-login">Continuer</button>
+        <p id="gps-status" style="color:#e74c3c; font-size:0.9rem; margin-top:20px;">Recherche du signal GPS...</p>
+    </div>
+
+    <div id="lobby-select-screen" class="screen hidden">
+        <h2>Choisir un Lobby</h2>
+        <p>Tu dois être à moins de 5km des autres joueurs.</p>
+        <div id="lobbies-container"></div>
+        <button class="btn-gray" onclick="location.reload()">Retour</button>
+    </div>
+
+    <div id="room-screen" class="screen hidden">
+        <h2>Lobby <span id="room-name"></span></h2>
+        <div class="player-list" id="room-players"></div>
+        <button id="btn-ready" class="btn-green">Se mettre Prêt</button>
+        <button id="btn-leave-room" class="btn-gray">Quitter le lobby</button>
+    </div>
+
+    <div id="hud" class="hidden">
+        <div class="hud-box" style="border-left: 4px solid #ff3e3e;">
+            <div id="score-display">00:00</div>
+            <div id="status-display" style="color:#00ff88;">Vivant</div>
+        </div>
+    </div>
+
+    <div id="debug-panel" class="hidden">
+        <button class="debug-btn" id="btn-recenter">Recentrer Map</button>
+        <button class="debug-btn" id="btn-reload-map">Recharger Map</button>
+        <button class="debug-btn" id="btn-gps">Forcer GPS</button>
+    </div>
+
+    <div id="spectator-screen" class="screen hidden" style="background: rgba(10,10,10,0.8); pointer-events: none;">
+        <h1 style="font-size: 2.5rem;">VOUS ÊTES MORT</h1>
+        <h2>Mode Spectateur</h2>
+        <div style="pointer-events: auto; margin-top:30px;">
+            <button id="btn-leave-spectate" class="btn-gray">Quitter la partie</button>
+        </div>
+    </div>
+
+    <div id="end-screen" class="screen hidden">
+        <h1>FIN DE PARTIE</h1>
+        <p>Tous les joueurs sont morts.</p>
+        <div class="scoreboard" id="final-scoreboard"></div>
+        <button onclick="location.reload()">Menu Principal</button>
+    </div>
+
+    <div id="map"></div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js";
+        import { getDatabase, ref, set, get, update, onValue, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-database.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBqRloMg22mDsnfqhNK77vREQYtLFBgyf0",
+            authDomain: "territory-war-acfca.firebaseapp.com",
+            databaseURL: "https://territory-war-acfca-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "territory-war-acfca",
+            storageBucket: "territory-war-acfca.firebasestorage.app",
+            messagingSenderId: "399616663350",
+            appId: "1:399616663350:web:b69d53d353181cbe679d97",
+            measurementId: "G-5MSDF4XKQJ"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // --- Variables Globales ---
+        let map;
+        let myId = "player_" + Math.random().toString(36).substr(2, 9);
+        let myPseudo = "";
+        let myPos = null;
+        let watchId = null;
+        
+        let currentLobbyId = null;
+        let isHost = false; // Le 1er joueur gère les zombies
+        let isPlaying = false;
+        let isDead = false;
+        
+        let playerMarkers = {};
+        let zombieMarkers = {};
+        let localZombies = []; // Utilisé par l'hôte pour calculer
+        
+        let gameStartTime = 0;
+        let hostGameLoopInterval = null;
+        let scoreInterval = null;
+        
+        const PLAYER_COLORS = ['#2ecc71', '#f1c40f', '#ffffff', '#000000'];
+
+        // --- Init Map ---
+        function initMap() {
+            map = L.map('map', { zoomControl: false }).setView([48.8566, 2.3522], 17);
+            L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+        }
+
+        // --- GPS Logic ---
+        function startGPS(callback) {
+            if (!navigator.geolocation) return alert("GPS non supporté.");
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            
+            document.getElementById('gps-status').innerText = "Acquisition GPS...";
+            
+            watchId = navigator.geolocation.watchPosition(
+                (pos) => {
+                    myPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                    document.getElementById('gps-status').innerText = "GPS OK !";
+                    document.getElementById('btn-login').disabled = false;
+                    
+                    if (isPlaying && !isDead && currentLobbyId) {
+                        update(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`), { lat: myPos.lat, lng: myPos.lng });
+                    }
+                    if (callback) { callback(); callback = null; }
+                },
+                (err) => { document.getElementById('gps-status').innerText = "Erreur GPS. Autorisez la localisation."; },
+                { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+            );
+        }
+
+        // --- Utilitaires ---
+        function getDistanceKm(lat1, lon1, lat2, lon2) {
+            const R = 6371; 
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        function formatTime(seconds) {
+            let m = Math.floor(seconds / 60).toString().padStart(2, '0');
+            let s = (seconds % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        // --- UI Navigation ---
+        function switchScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+            if(screenId) document.getElementById(screenId).classList.remove('hidden');
+        }
+
+        // --- Etape 1: Login ---
+        document.getElementById('btn-login').disabled = true;
+        initMap();
+        startGPS();
+
+        document.getElementById('btn-login').addEventListener('click', () => {
+            myPseudo = document.getElementById('pseudo-input').value.trim() || "Anonyme";
+            switchScreen('lobby-select-screen');
+            loadLobbies();
+        });
+
+        // --- Etape 2: Lobbies ---
+        function loadLobbies() {
+            const container = document.getElementById('lobbies-container');
+            
+            onValue(ref(db, 'Lobby'), (snapshot) => {
+                if(currentLobbyId) return; // Ignore si on est déjà dans un lobby
+                container.innerHTML = '';
+                const data = snapshot.val() || {};
+                
+                for(let i = 1; i <= 3; i++) {
+                    const lobby = data[`lobby_${i}`] || { status: 'waiting', Players: {} };
+                    const playersCount = lobby.Players ? Object.keys(lobby.Players).length : 0;
+                    
+                    const div = document.createElement('div');
+                    div.className = 'lobby-card';
+                    div.innerHTML = `
+                        <div>
+                            <strong style="font-size:1.2rem;">Lobby ${i}</strong><br>
+                            <span style="color:#aaa;">${playersCount}/4 Joueurs</span><br>
+                            <span style="font-size:0.8rem; color:${lobby.status === 'playing' ? '#e74c3c' : '#2ecc71'}">${lobby.status === 'playing' ? 'En partie' : 'En attente'}</span>
+                        </div>
+                        <button onclick="window.joinLobby('lobby_${i}')" ${playersCount >= 4 || lobby.status === 'playing' ? 'disabled' : ''}>Rejoindre</button>
+                    `;
+                    container.appendChild(div);
+                }
+            });
+        }
+
+        window.joinLobby = async (lobbyId) => {
+            const lobbyRef = ref(db, `Lobby/${lobbyId}`);
+            const snapshot = await get(lobbyRef);
+            const lobbyData = snapshot.val() || { status: 'waiting', Players: {} };
+            
+            if (lobbyData.status === 'playing') return alert("Partie déjà lancée !");
+            
+            const players = lobbyData.Players || {};
+            const playerIds = Object.keys(players);
+            
+            if (playerIds.length >= 4) return alert("Lobby plein !");
+            
+            // Verif 5km
+            for (let pid of playerIds) {
+                const p = players[pid];
+                if (getDistanceKm(myPos.lat, myPos.lng, p.lat, p.lng) > 5) {
+                    return alert(`Trop loin ! Le joueur ${p.name} est à plus de 5km.`);
+                }
+            }
+
+            // Attribuer couleur
+            const color = PLAYER_COLORS[playerIds.length];
+            
+            // Join
+            currentLobbyId = lobbyId;
+            await set(ref(db, `Lobby/${lobbyId}/Players/${myId}`), {
+                name: myPseudo, lat: myPos.lat, lng: myPos.lng, color: color, isReady: false, isDead: false, score: 0
+            });
+            
+            // Delete on disconnect
+            onDisconnect(ref(db, `Lobby/${lobbyId}/Players/${myId}`)).remove();
+
+            switchScreen('room-screen');
+            document.getElementById('room-name').innerText = lobbyId.split('_')[1];
+            listenRoom();
+        };
+
+        // --- Etape 3: Room ---
+        function listenRoom() {
+            onValue(ref(db, `Lobby/${currentLobbyId}`), (snapshot) => {
+                const data = snapshot.val();
+                if (!data) return;
+
+                // Si la partie se lance
+                if (data.status === 'playing' && !isPlaying) {
+                    startGame(data.Players);
+                    return;
+                }
+
+                // Update UI Liste Joueurs
+                const players = data.Players || {};
+                const listDiv = document.getElementById('room-players');
+                listDiv.innerHTML = '';
+                
+                let allReady = true;
+                const pKeys = Object.keys(players);
+                
+                pKeys.forEach(pid => {
+                    const p = players[pid];
+                    if (!p.isReady) allReady = false;
+                    listDiv.innerHTML += `
+                        <div class="player-row">
+                            <span><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${p.color}; margin-right:8px;"></span>${p.name} ${pid === myId ? '(Toi)' : ''}</span>
+                            <span style="color:${p.isReady ? '#2ecc71' : '#e74c3c'}">${p.isReady ? 'PRÊT' : 'ATTENTE'}</span>
+                        </div>
+                    `;
+                });
+
+                // Lancer si min 2 joueurs et tous prêts
+                if (pKeys.length >= 2 && allReady) {
+                    // Le premier joueur de la liste devient l'Hôte
+                    if (pKeys[0] === myId) {
+                        update(ref(db, `Lobby/${currentLobbyId}`), { status: 'playing', startTime: Date.now() });
+                    }
+                }
+            });
+        }
+
+        document.getElementById('btn-ready').addEventListener('click', () => {
+            update(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`), { isReady: true });
+            document.getElementById('btn-ready').disabled = true;
+        });
+
+        document.getElementById('btn-leave-room').addEventListener('click', () => {
+            remove(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`));
+            currentLobbyId = null;
+            switchScreen('lobby-select-screen');
+            loadLobbies();
+        });
+
+        // --- Etape 4: Jeu ---
+        function startGame(playersObj) {
+            isPlaying = true;
+            isDead = false;
+            switchScreen(null); // Cache tous les écrans
+            document.getElementById('hud').classList.remove('hidden');
+            document.getElementById('debug-panel').classList.remove('hidden');
+
+            const pKeys = Object.keys(playersObj);
+            isHost = (pKeys[0] === myId); // Le 1er est l'hôte
+            
+            map.setView([myPos.lat, myPos.lng], 17);
+
+            // Ecoute des joueurs (positions)
+            onValue(ref(db, `Lobby/${currentLobbyId}/Players`), (snap) => {
+                const players = snap.val() || {};
+                let allDead = true;
+
+                for (let pid in playerMarkers) {
+                    if (!players[pid]) {
+                        map.removeLayer(playerMarkers[pid]);
+                        delete playerMarkers[pid];
+                    }
+                }
+
+                for (let pid in players) {
+                    const p = players[pid];
+                    if(!p.isDead) allDead = false;
+
+                    if (!p.isDead && !playerMarkers[pid]) {
+                        const icon = L.divIcon({ className: 'custom-div-icon', html: `<div class='player-marker' style='background-color:${p.color};'></div>`, iconSize: [16, 16], iconAnchor: [8, 8] });
+                        playerMarkers[pid] = L.marker([p.lat, p.lng], {icon}).addTo(map);
+                    } else if (!p.isDead && playerMarkers[pid]) {
+                        playerMarkers[pid].setLatLng([p.lat, p.lng]);
+                    } else if (p.isDead && playerMarkers[pid]) {
+                        map.removeLayer(playerMarkers[pid]);
+                        delete playerMarkers[pid];
+                    }
+                }
+
+                // Check fin de partie
+                if(allDead && isHost) {
+                    update(ref(db, `Lobby/${currentLobbyId}`), { status: 'finished' });
+                }
+            });
+
+            // Ecoute de l'état de la partie
+            onValue(ref(db, `Lobby/${currentLobbyId}/status`), (snap) => {
+                if(snap.val() === 'finished') endGame();
+            });
+
+            // Ecoute des Zombies
+            onValue(ref(db, `Zombies/${currentLobbyId}`), (snap) => {
+                const zData = snap.val() || {};
+                
+                for(let zid in zombieMarkers) {
+                    if(!zData[zid]) { map.removeLayer(zombieMarkers[zid]); delete zombieMarkers[zid]; }
+                }
+
+                for(let zid in zData) {
+                    const z = zData[zid];
+                    if(!zombieMarkers[zid]) {
+                        const icon = L.divIcon({ className: 'custom-div-icon', html: "<div class='zombie-marker'></div>", iconSize: [16, 16], iconAnchor: [8, 8] });
+                        zombieMarkers[zid] = L.marker([z.lat, z.lng], {icon}).addTo(map);
+                    } else {
+                        zombieMarkers[zid].setLatLng([z.lat, z.lng]);
+                    }
+
+                    // Check Collision Locale pour MA propre mort
+                    if(!isDead && getDistanceKm(myPos.lat, myPos.lng, z.lat, z.lng) < 0.005) { // 5 mètres
+                        triggerDeath();
+                    }
+                }
+            });
+
+            // Timer perso
+            gameStartTime = Date.now();
+            scoreInterval = setInterval(() => {
+                if(!isDead) {
+                    const s = Math.floor((Date.now() - gameStartTime)/1000);
+                    document.getElementById('score-display').innerText = formatTime(s);
+                    update(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`), { score: s });
+                }
+            }, 1000);
+
+            // Host logic (Boucle serveur)
+            if(isHost) {
+                const numPlayers = pKeys.length;
+                hostGameLoopInterval = setInterval(() => hostZombieEngine(numPlayers), 1000);
+            }
+        }
+
+        // --- Moteur Zombie (Hôte uniquement) ---
+        function hostZombieEngine(numPlayers) {
+            get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
+                const players = snap.val() || {};
+                const alivePlayers = Object.values(players).filter(p => !p.isDead);
+                if(alivePlayers.length === 0) return;
+
+                let elapsedTimeSec = Math.floor((Date.now() - gameStartTime)/1000);
+                
+                // Vitesse s'adapte au temps: base 5km/h + 1km/h toutes les 2 min
+                let speedKmh = 5 + Math.floor(elapsedTimeSec / 120); 
+                let speedDegPerSec = (speedKmh / 3.6) / 111320; // Approx conversion mètres -> degrés
+
+                // Spawn dynamique (Multijoueur = Plus de zombies)
+                let maxZombies = Math.min(30, 5 + Math.floor(elapsedTimeSec/15) * numPlayers); 
+                
+                if(localZombies.length < maxZombies && Math.random() < 0.3) {
+                    let targetP = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
+                    let angle = Math.random() * Math.PI * 2;
+                    let dist = 0.003 + Math.random() * 0.006; // Spawn 300m à 900m
+                    localZombies.push({
+                        id: "z_" + Math.random().toString(36).substr(2,9),
+                        lat: targetP.lat + Math.sin(angle)*dist,
+                        lng: targetP.lng + Math.cos(angle)*dist
+                    });
+                }
+
+                // Déplacement vers le joueur le plus proche
+                let updates = {};
+                localZombies.forEach(z => {
+                    let closest = null;
+                    let minDist = Infinity;
+
+                    alivePlayers.forEach(p => {
+                        let d = getDistanceKm(z.lat, z.lng, p.lat, p.lng);
+                        if(d < minDist) { minDist = d; closest = p; }
+                    });
+
+                    if(closest) {
+                        let dLat = closest.lat - z.lat;
+                        let dLng = closest.lng - z.lng;
+                        let distDeg = Math.sqrt(dLat*dLat + dLng*dLng);
+                        
+                        if(distDeg > 0) {
+                            z.lat += (dLat/distDeg) * speedDegPerSec;
+                            z.lng += (dLng/distDeg) * speedDegPerSec;
+                        }
+                    }
+                    updates[z.id] = { lat: z.lat, lng: z.lng };
+                });
+
+                set(ref(db, `Zombies/${currentLobbyId}`), updates);
+            });
+        }
+
+        function triggerDeath() {
+            if(isDead) return;
+            isDead = true;
+            document.getElementById('status-display').innerText = "MORT";
+            document.getElementById('status-display').style.color = "#e74c3c";
+            
+            update(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`), { isDead: true });
+            
+            document.getElementById('spectator-screen').classList.remove('hidden');
+        }
+
+        document.getElementById('btn-leave-spectate').addEventListener('click', () => {
+            remove(ref(db, `Lobby/${currentLobbyId}/Players/${myId}`));
+            location.reload();
+        });
+
+        function endGame() {
+            clearInterval(scoreInterval);
+            if(isHost) clearInterval(hostGameLoopInterval);
+            
+            get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
+                const players = snap.val() || {};
+                const sb = document.getElementById('final-scoreboard');
+                sb.innerHTML = '';
+                
+                Object.values(players).sort((a,b)=> b.score - a.score).forEach((p, index) => {
+                    sb.innerHTML += `<div style="display:flex; justify-content:space-between; padding:5px; border-bottom:1px solid #444;">
+                        <span>#${index+1} <span style="color:${p.color}">${p.name}</span></span>
+                        <span>${formatTime(p.score)}</span>
+                    </div>`;
+                });
+
+                switchScreen('end-screen');
+                document.getElementById('hud').classList.add('hidden');
+                document.getElementById('debug-panel').classList.add('hidden');
+                
+                // Clean DB if Host
+                if(isHost) {
+                    remove(ref(db, `Lobby/${currentLobbyId}`));
+                    remove(ref(db, `Zombies/${currentLobbyId}`));
+                }
+            });
+        }
+
+        // --- Boutons Debug ---
+        document.getElementById('btn-recenter').addEventListener('click', () => {
+            if(myPos) map.setView([myPos.lat, myPos.lng], 17);
+        });
+
+        document.getElementById('btn-reload-map').addEventListener('click', () => {
+            map.invalidateSize();
+        });
+
+        document.getElementById('btn-gps').addEventListener('click', () => {
+            startGPS();
+        });
+
+    </script>
+</body>
+</html>
