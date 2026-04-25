@@ -11,6 +11,34 @@
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Segoe UI', Roboto, sans-serif; background-color: #0a0a0a; color: #eee; overflow: hidden; touch-action: none; }
         #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; filter: grayscale(0.5) contrast(1.2); }
         
+    
+    /* Panneau qui apparaît quand on clique sur le bouton */
+#debug-panel {
+    position: absolute;
+    top: 60px; /* Juste en dessous du bouton dans le HUD */
+    right: 15px;
+    background: rgba(0, 0, 0, 0.9);
+    padding: 10px;
+    border-radius: 10px;
+    border: 1px solid #777;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 2000;
+}
+
+.debug-btn {
+    padding: 10px;
+    background: #444;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    width: 100%;
+}
+
+    
         /* --- Écrans --- */
         .screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: radial-gradient(circle, rgba(20,20,20,0.95) 0%, rgba(0,0,0,1) 100%); z-index: 1000; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; box-sizing: border-box; }
         .hidden { display: none !important; }
@@ -63,13 +91,15 @@
 <body>
 
     <div id="login-screen" class="screen">
-        <h1>Z-Run</h1>
-        <h2>Multijoueur</h2>
-        <p>Entrez votre pseudo pour commencer</p>
-        <input type="text" id="pseudo-input" placeholder="Pseudo..." maxlength="12">
-        <button id="btn-login">Continuer</button>
-        <p id="gps-status" style="color:#e74c3c; font-size:0.9rem; margin-top:20px;">Recherche du signal GPS...</p>
+    <h1>Z-Run</h1>
+    <button id="btn-login">Continuer</button>
+    <p id="gps-status">Recherche du signal GPS...</p>
+
+    <div style="position: absolute; bottom: 20px;">
+        <button id="btn-toggle-debug-start" style="background: #333; width: auto; padding: 5px 15px; font-size: 0.7rem;">⚙️ Paramètres GPS</button>
     </div>
+</div>
+
 
     <div id="lobby-select-screen" class="screen hidden">
         <h2>Choisir un Lobby</h2>
@@ -124,6 +154,17 @@
     <div id="map"></div>
 
     <script type="module">
+    
+    const manifest = {
+        "name": "Multi Z-Run", "short_name": "Multi Z-Run", "start_url": window.location.href,
+        "display": "standalone", "background_color": "#000000", "theme_color": "#0088cc",
+        "icons": [{"src": "https://cdn-icons-png.flaticon.com/512/1078/1078271.png", "sizes": "192x192", "type": "image/png"}]
+    };
+    const blob = new Blob([JSON.stringify(manifest)], {type: 'application/json'});
+    const link = document.createElement('link'); link.rel = 'manifest'; link.href = URL.createObjectURL(blob);
+    document.head.appendChild(link);
+
+    
         import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-app.js";
         import { getDatabase, ref, set, get, update, onValue, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/12.12.1/firebase-database.js";
 
@@ -143,7 +184,9 @@
 
         // --- Variables Globales ---
         let map;
-        let myId = "player_" + Math.random().toString(36).substr(2, 9);
+        let myId = localStorage.getItem('zrun_user_id') || "player_" + Math.random().toString(36).substr(2, 9);
+localStorage.setItem('zrun_user_id', myId);
+
         let myPseudo = "";
         let myPos = null;
         let watchId = null;
@@ -286,13 +329,22 @@
             }
 
             const color = PLAYER_COLORS[playerIds.length];
-            
             currentLobbyId = lobbyId;
-            await set(ref(db, `Lobby/${lobbyId}/Players/${myId}`), {
-                name: myPseudo, lat: myPos.lat, lng: myPos.lng, color: color, isReady: false, isDead: false, score: 0
+
+            const playerRef = ref(db, `Lobby/${lobbyId}/Players/${myId}`);
+            
+            // Création / Mise à jour du joueur
+            await set(playerRef, {
+                name: myPseudo, lat: myPos.lat, lng: myPos.lng, color: color, 
+                isReady: false, isDead: false, score: 0, 
+                isOnline: true, lastSeen: Date.now()
             });
             
-            onDisconnect(ref(db, `Lobby/${lobbyId}/Players/${myId}`)).remove();
+            // Configuration de la déconnexion propre
+            onDisconnect(playerRef).update({
+                isOnline: false,
+                lastSeen: Date.now()
+            });
 
             switchScreen('room-screen');
             document.getElementById('room-name').innerText = lobbyId.split('_')[1];
@@ -546,54 +598,72 @@
 
         // --- Moteur Zombie (Hôte uniquement) ---
         function hostZombieEngine(numPlayers) {
-            get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
-                const players = snap.val() || {};
-                const alivePlayers = Object.values(players).filter(p => !p.isDead);
-                if(alivePlayers.length === 0) return;
+    get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
+        const players = snap.val() || {};
+        const now = Date.now();
+        const GRACE_PERIOD = 30000; // 30 secondes de délai
 
-                let elapsedTimeSec = Math.floor((Date.now() - gameStartTime)/1000);
-                let speedKmh = 5 + Math.floor(elapsedTimeSec / 120); 
-                let speedDegPerSec = (speedKmh / 3.6) / 111320; 
-
-                let maxZombies = Math.min(30, 5 + Math.floor(elapsedTimeSec/15) * numPlayers); 
-                
-                if(localZombies.length < maxZombies && Math.random() < 0.3) {
-                    let targetP = alivePlayers[Math.floor(Math.random() * alivePlayers.length)];
-                    let angle = Math.random() * Math.PI * 2;
-                    let dist = 0.003 + Math.random() * 0.006; 
-                    localZombies.push({
-                        id: "z_" + Math.random().toString(36).substr(2,9),
-                        lat: targetP.lat + Math.sin(angle)*dist,
-                        lng: targetP.lng + Math.cos(angle)*dist
-                    });
+        // 1. GESTION DES DÉCONNEXIONS (Le Nettoyage)
+        for (let pid in players) {
+            const p = players[pid];
+            if (p.isOnline === false && !p.isDead) {
+                if (now - p.lastSeen > GRACE_PERIOD) {
+                    // Trop tard, on l'élimine officiellement
+                    update(ref(db, `Lobby/${currentLobbyId}/Players/${pid}`), { isDead: true });
                 }
+            }
+        }
 
-                let updates = {};
-                localZombies.forEach(z => {
-                    let closest = null;
-                    let minDist = Infinity;
+        // 2. FILTRAGE DES CIBLES VALIDES
+        // Les zombies ne ciblent que les joueurs VIVANTS ET EN LIGNE
+        const aliveAndOnlinePlayers = Object.values(players).filter(p => !p.isDead && p.isOnline !== false);
+        
+        // Si plus personne n'est là, on arrête le moteur pour cette seconde
+        if(aliveAndOnlinePlayers.length === 0) return;
 
-                    alivePlayers.forEach(p => {
-                        let d = getDistanceKm(z.lat, z.lng, p.lat, p.lng);
-                        if(d < minDist) { minDist = d; closest = p; }
-                    });
-
-                    if(closest) {
-                        let dLat = closest.lat - z.lat;
-                        let dLng = closest.lng - z.lng;
-                        let distDeg = Math.sqrt(dLat*dLat + dLng*dLng);
-                        
-                        if(distDeg > 0) {
-                            z.lat += (dLat/distDeg) * speedDegPerSec;
-                            z.lng += (dLng/distDeg) * speedDegPerSec;
-                        }
-                    }
-                    updates[z.id] = { lat: z.lat, lng: z.lng };
-                });
-
-                set(ref(db, `Zombies/${currentLobbyId}`), updates);
+        // 3. LOGIQUE DES ZOMBIES (Vitesse et Spawns)
+        let elapsedTimeSec = Math.floor((Date.now() - gameStartTime)/1000);
+        let speedKmh = 5 + Math.floor(elapsedTimeSec / 120); 
+        let speedDegPerSec = (speedKmh / 3.6) / 111320; 
+        let maxZombies = Math.min(30, 5 + Math.floor(elapsedTimeSec/15) * numPlayers); 
+        
+        if(localZombies.length < maxZombies && Math.random() < 0.3) {
+            let targetP = aliveAndOnlinePlayers[Math.floor(Math.random() * aliveAndOnlinePlayers.length)];
+            let angle = Math.random() * Math.PI * 2;
+            let dist = 0.003 + Math.random() * 0.006; 
+            localZombies.push({
+                id: "z_" + Math.random().toString(36).substr(2,9),
+                lat: targetP.lat + Math.sin(angle)*dist,
+                lng: targetP.lng + Math.cos(angle)*dist
             });
         }
+
+        let updates = {};
+        localZombies.forEach(z => {
+            let closest = null;
+            let minDist = Infinity;
+
+            aliveAndOnlinePlayers.forEach(p => {
+                let d = getDistanceKm(z.lat, z.lng, p.lat, p.lng);
+                if(d < minDist) { minDist = d; closest = p; }
+            });
+
+            if(closest) {
+                let dLat = closest.lat - z.lat;
+                let dLng = closest.lng - z.lng;
+                let distDeg = Math.sqrt(dLat*dLat + dLng*dLng);
+                if(distDeg > 0) {
+                    z.lat += (dLat/distDeg) * speedDegPerSec;
+                    z.lng += (dLng/distDeg) * speedDegPerSec;
+                }
+            }
+            updates[z.id] = { lat: z.lat, lng: z.lng };
+        });
+
+        set(ref(db, `Zombies/${currentLobbyId}`), updates);
+    });
+}
+
 
         function triggerDeath() {
             if(isDead) return;
@@ -655,6 +725,15 @@
             startGPS();
         });
 
+    // Si tu as ajouté le bouton sur l'écran de départ
+const btnStartDebug = document.getElementById('btn-toggle-debug-start');
+if(btnStartDebug) {
+    btnStartDebug.addEventListener('click', () => {
+        document.getElementById('debug-panel').classList.toggle('hidden');
+    });
+}
+
+    
     </script>
 </body>
 </html>
