@@ -191,6 +191,62 @@
             { id: 'teleport', label: '🌀 Saut d\'Espace', rare: true } 
         ];
 
+    
+    // --- Système Audio ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let heartRateInterval = null;
+
+function playHeartbeat(distance) {
+    // distance entre 0.002 (2m) et 0.015 (15m)
+    // On calcule un délai entre 200ms (très rapide) et 1000ms (lent)
+    const bpmDelay = Math.max(200, Math.min(1000, (distance * 60000)));
+
+    if (heartRateInterval) return; // Déjà en train de battre
+
+    const beat = () => {
+        if (!isPlaying || isDead) return;
+        
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(60, audioCtx.currentTime); // Fréquence basse (boum)
+        osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+        
+        // Double battement (LUB-DUB)
+        setTimeout(() => {
+            const osc2 = audioCtx.createOscillator();
+            const gain2 = audioCtx.createGain();
+            osc2.type = 'sine';
+            osc2.frequency.setValueAtTime(50, audioCtx.currentTime);
+            gain2.gain.setValueAtTime(0.3, audioCtx.currentTime);
+            gain2.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            osc2.connect(gain2);
+            gain2.connect(audioCtx.destination);
+            osc2.start();
+            osc2.stop(audioCtx.currentTime + 0.1);
+        }, 150);
+
+        heartRateInterval = setTimeout(beat, bpmDelay);
+    };
+    beat();
+}
+
+function stopHeartbeat() {
+    clearTimeout(heartRateInterval);
+    heartRateInterval = null;
+}
+
+    
         // --- Init Map ---
         function initMap() {
             map = L.map('map', { zoomControl: false }).setView([48.8566, 2.3522], 17);
@@ -634,32 +690,46 @@ function startGPS(callback) {
         });
 
         function endGame() {
-            clearInterval(scoreInterval);
-            clearInterval(checkZonesInterval);
-            if(isHost) clearInterval(hostGameLoopInterval);
-            
-            get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
-                const players = snap.val() || {};
-                const sb = document.getElementById('final-scoreboard');
-                sb.innerHTML = '';
-                
-                Object.values(players).sort((a,b)=> b.score - a.score).forEach((p, index) => {
-                    sb.innerHTML += `<div style="display:flex; justify-content:space-between; padding:5px; border-bottom:1px solid #444;">
-                        <span>#${index+1} <span style="color:${p.color}">${p.name}</span></span>
-                        <span>Score: ${Math.floor(p.score)}</span>
-                    </div>`;
-                });
+    clearInterval(scoreInterval);
+    clearInterval(checkZonesInterval);
+    stopHeartbeat(); // Arrêter le son à la fin
+    if(isHost) clearInterval(hostGameLoopInterval);
+    
+    get(ref(db, `Lobby/${currentLobbyId}/Players`)).then(snap => {
+        const players = snap.val() || {};
+        const sb = document.getElementById('final-scoreboard');
+        sb.innerHTML = '<h3 style="color:#00ff88; text-align:center;">CLASSEMENT FINAL</h3>';
+        
+        // Transformer l'objet en tableau et trier par score décroissant
+        const sortedPlayers = Object.values(players).sort((a, b) => b.score - a.score);
 
-                switchScreen('end-screen');
-                document.getElementById('hud').classList.add('hidden');
-                document.getElementById('debug-container').classList.add('hidden');
-                
-                if(isHost) {
-                    remove(ref(db, `Lobby/${currentLobbyId}`));
-                    remove(ref(db, `Zombies/${currentLobbyId}`));
-                }
-            });
+        sortedPlayers.forEach((p, index) => {
+            const isMe = p.name === myPseudo;
+            sb.innerHTML += `
+                <div class="player-row" style="background:${isMe ? 'rgba(0,255,136,0.1)' : 'transparent'}; padding: 10px; border-bottom: 1px solid #444;">
+                    <span style="font-weight:bold; color:${p.color}">
+                        #${index + 1} ${p.name} ${isMe ? '(MOI)' : ''}
+                    </span>
+                    <span style="color:#f1c40f; font-family:monospace;">
+                        ${Math.floor(p.score).toLocaleString()} PTS
+                    </span>
+                </div>`;
+        });
+
+        switchScreen('end-screen');
+        document.getElementById('hud').classList.add('hidden');
+        document.getElementById('debug-container').classList.add('hidden');
+        
+        if(isHost) {
+            // On laisse un petit délai pour que tout le monde voit le score avant de supprimer
+            setTimeout(() => {
+                remove(ref(db, `Lobby/${currentLobbyId}`));
+                remove(ref(db, `Zombies/${currentLobbyId}`));
+            }, 5000);
         }
+    });
+}
+
 
         // --- Boutons Debug centralisés ---
         document.getElementById('btn-toggle-debug').addEventListener('click', () => {
